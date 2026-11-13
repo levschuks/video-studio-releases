@@ -27,6 +27,8 @@ jobs:
           New-Item -ItemType Directory build | Out-Null
           Expand-Archive win-unpacked.zip build/win-unpacked
           Copy-Item win-package.json build/package.json
+          # the installer takes its icon from the app's own copy
+          if (Test-Path build/win-unpacked/resources/app/build/icon.png) { New-Item -ItemType Directory build/build | Out-Null; Copy-Item build/win-unpacked/resources/app/build/icon.png build/build/icon.png }
           Set-Location build
           npx --yes electron-builder@26.18.0 --prepackaged win-unpacked --win nsis --x64 --publish never
           Get-ChildItem out
