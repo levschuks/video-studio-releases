@@ -1,0 +1,55 @@
+# Builds the Windows installer from the unpacked app attached to a release, installs it,
+# runs the app's self-test (voices and renders a short video) and only then promotes the release.
+name: windows
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag, e.g. v0.2.0
+        required: true
+permissions:
+  contents: write
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build installer
+        shell: pwsh
+        run: |
+          gh release download $env:TAG -R $env:GITHUB_REPOSITORY -p win-unpacked.zip -p win-package.json
+          New-Item -ItemType Directory build | Out-Null
+          Expand-Archive win-unpacked.zip build/win-unpacked
+          Copy-Item win-package.json build/package.json
+          Set-Location build
+          npx --yes electron-builder@26.18.0 --prepackaged win-unpacked --win nsis --x64 --publish never
+          Get-ChildItem out
+      - name: Install and self-test
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem build/out/*.exe | Select-Object -First 1).FullName
+          Start-Process $exe -ArgumentList '/S' -Wait
+          $app = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Filter 'Video Studio.exe' | Select-Object -First 1
+          if (-not $app) { throw 'the app was not installed' }
+          $p = Start-Process $app.FullName -ArgumentList '--smoke' -PassThru
+          if (-not $p.WaitForExit(20 * 60 * 1000)) { $p.Kill(); throw 'self-test timed out' }
+          $report = "$env:USERPROFILE\VideoStudio\smoke.json"
+          if (Test-Path $report) { Get-Content $report }
+          if ($p.ExitCode -ne 0) { throw "self-test failed with exit code $($p.ExitCode)" }
+      - name: Publish
+        shell: pwsh
+        run: |
+          Set-Location build/out
+          $exe = (Get-ChildItem *.exe | Select-Object -First 1).Name
+          $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:TAG/$exe"
+          (Get-Content latest.yml) -replace [regex]::Escape($exe), $url | Set-Content latest.yml
+          gh release upload $env:TAG $exe "$exe.blockmap" latest.yml -R $env:GITHUB_REPOSITORY --clobber
+          gh release delete-asset $env:TAG win-unpacked.zip -R $env:GITHUB_REPOSITORY -y
+          gh release delete-asset $env:TAG win-package.json -R $env:GITHUB_REPOSITORY -y
+          gh release edit $env:TAG -R $env:GITHUB_REPOSITORY --prerelease=false --latest
